@@ -4,17 +4,15 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from pyparsing import ABC
 
-from qldpc_sim.data_structure.pauli import PauliChar, PauliEigenState
+from qldpc_sim.data_structure.tanner_graph import CheckNode
 from qldpc_sim.qec_code.ec_code import ErrorCorrectionCode
-from qldpc_sim.qldpc_experiment.context import Context
-from ..data_structure import LogicalOperator, TannerGraph
-
+from ..data_structure import LogicalOperator, TannerGraph, PauliChar, PauliEigenState
+from .context import Context
+from .quantum_memory import QuantumMemory
 from .compilers import (
     ApplyGates,
     Compiler,
-    DestructiveMeasurementCompiler,
-    LogicalPauliCompiler,
-    QuantumMemory,
+    MeasurementCompiler,
     StabilisersMeasurementCompiler,
 )
 
@@ -34,7 +32,7 @@ class CodeGadget(QECGadget):
 
 
 class LogicGadget(QECGadget):
-    logical_target: List[LogicalOperator]
+    logical_targets: List[LogicalOperator]
 
 
 class LogicalPauli(LogicGadget):
@@ -42,14 +40,11 @@ class LogicalPauli(LogicGadget):
 
     def build_compiler_instructions(self) -> List[Compiler]:
         compilers = []
-        for lop in self.logical_target:
-            # Build tanner with only var nodes corresponding to the logical qubit
-            t = TannerGraph(
-                variable_nodes=set(lop.target_nodes),
-                check_nodes=set(),
-                edges=set(),
+        # TODO: check compatibility of the differents logical operators (e.g. the support must not overlap (or only under specific conditions)
+        for lop in self.logical_targets:
+            compiler = ApplyGates(
+                target_nodes=lop.target_nodes, gates=[lop.logical_type], tag=self.tag
             )
-            compiler = LogicalPauliCompiler(data=t, operator=lop.logical_type)
             compilers.append(compiler)
         return compilers
 
@@ -85,59 +80,34 @@ class InitializeCode(CodeGadget):
                 raise ValueError(
                     "Init only supported for |0> state for codes with multiple logical qubits."
                 )
-        match self.initial_state:
-            case PauliEigenState.Z_plus:
-                return [
-                    ApplyGates(
-                        target_nodes=self.code.tanner_graph.variable_nodes
-                        | self.code.tanner_graph.check_nodes,
-                        gates=["RZ"],
-                        tag=f"InitializeCode_{self.tag}",
-                    )
-                ]
-            case PauliEigenState.Z_minus:
-                return [
-                    ApplyGates(
-                        target_nodes=self.code.tanner_graph.variable_nodes
-                        | self.code.tanner_graph.check_nodes,
-                        gates=["RZ"],
-                        tag=f"InitializeCode_{self.tag}",
-                    ),
-                    ApplyGates(
-                        target_nodes=set(
-                            self.code.logical_qubits[0].logical_x.target_nodes
-                        ),
-                        gates=["X"],
-                        tag=f"InitializeCode_{self.tag}",
-                    ),
-                ]
-            case PauliEigenState.X_plus:
-                return [
-                    ApplyGates(
-                        target_nodes=self.code.tanner_graph.variable_nodes
-                        | self.code.tanner_graph.check_nodes,
-                        gates=["RX"],
-                        tag=f"InitializeCode_{self.tag}",
-                    )
-                ]
-            case PauliEigenState.X_minus:
-                return [
-                    ApplyGates(
-                        target_nodes=self.code.tanner_graph.variable_nodes
-                        | self.code.tanner_graph.check_nodes,
-                        gates=["RX"],
-                        tag=f"InitializeCode_{self.tag}",
-                    ),
-                    ApplyGates(
-                        target_nodes=set(
-                            self.code.logical_qubits[0].logical_z.target_nodes
-                        ),
-                        gates=["Z"],
-                        tag=f"InitializeCode_{self.tag}",
-                    ),
-                ]
-            case _:
-                raise ValueError("Unsupported initialization")
+        compilers = [
+            ApplyGates(
+                target_nodes=self.code.tanner_graph.variable_nodes
+                | self.code.tanner_graph.check_nodes,
+                gates=self.initial_state.pauli_from_zero(),
+                tag=f"Init_{self.tag}_reset",
+            )
+        ]
+        stabiliser = StabilisersMeasurementCompiler(
+            data=self.code.tanner_graph,
+            round=1,
+            tag=f"Init_{self.tag}_stab_meas",
+            observable_included={
+                f"z_stabs_{self.tag}": {
+                    n
+                    for n in self.code.tanner_graph.check_nodes
+                    if n.check_type == CheckNode.CheckType.Z
+                },
+                f"x_stabs_{self.tag}": {
+                    n
+                    for n in self.code.tanner_graph.check_nodes
+                    if n.check_type == CheckNode.CheckType.X
+                },
+            },
+        )
+
+        compilers.append(stabiliser)
+        return compilers
 
 
 class LM(LogicGadget):
@@ -148,7 +118,7 @@ class LM(LogicGadget):
 
     def build_compiler_instructions(self) -> List[Compiler]:
         compilers = []
-        lop = self.logical_target[0]
+        lop = self.logical_targets[0]
         # Build tanner with only var nodes corresponding to the logical qubit
         t = TannerGraph(
             variable_nodes=set(lop.target_nodes),
@@ -156,7 +126,7 @@ class LM(LogicGadget):
             edges=set(),
         )
         compilers.append(
-            DestructiveMeasurementCompiler(
+            MeasurementCompiler(
                 data=t,
                 tag=self.tag,
                 basis=self.basis,
@@ -176,7 +146,7 @@ class Readout(CodeGadget):
     def build_compiler_instructions(self) -> List[Compiler]:
         compilers = []
         compilers.append(
-            DestructiveMeasurementCompiler(
+            MeasurementCompiler(
                 data=self.code.tanner_graph,
                 tag=self.tag,
                 basis=self.basis,

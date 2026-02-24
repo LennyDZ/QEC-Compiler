@@ -1,15 +1,18 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-
-from qldpc_sim.data_structure.pauli import PauliEigenState
-from qldpc_sim.data_structure.tanner_graph import TannerNode
-from qldpc_sim.qldpc_experiment.record import EventTag, EventType
+from ..data_structure import (
+    CheckNode,
+    TannerNode,
+    PauliEigenState,
+    PauliChar,
+    TannerGraph,
+)
+from .record import EventTag, EventType
 from .quantum_memory import QuantumMemory
-from ..data_structure import PauliChar, TannerGraph
 
 
 class Compiler(ABC, BaseModel):
@@ -44,38 +47,11 @@ class Compiler(ABC, BaseModel):
         pass
 
     @abstractmethod
-    def compile(self, memory: QuantumMemory) -> Tuple[List[str], Optional[EventTag]]:
-        """Compiles the operation into a list of stim instructions and an optional event tag."""
+    def compile(
+        self, memory: QuantumMemory
+    ) -> Tuple[List[str], Optional[List[EventTag]]]:
+        """Compiles the operation into a list of stim instructions and an optional list of event tags."""
         pass
-
-
-class LogicalPauliCompiler(Compiler):
-    """Compiler for logical pauli operation."""
-
-    operator: PauliChar  # "X", "Y", "Z"
-
-    def compile(self, memory: QuantumMemory) -> Tuple[List[str], Optional[EventTag]]:
-        self.check_enough_memory(memory)
-        stim_instructions = []
-        for dq in self.data.variable_nodes:
-            if dq.id not in memory.allocation:
-                memory.allocate_qubit(dq.id)
-            match (self.operator):
-                case PauliChar.X:
-                    stim_instructions.append(f"X {memory.allocation[dq.id]}")
-                case PauliChar.Y:
-                    stim_instructions.append(f"Y {memory.allocation[dq.id]}")
-                case PauliChar.Z:
-                    stim_instructions.append(f"Z {memory.allocation[dq.id]}")
-                case _:
-                    raise ValueError(f"Unknown logical operation type: {self.operator}")
-        return stim_instructions, None
-
-    def gate_cost(self):
-        return len(self.data.variable_nodes)
-
-    def qubits_cost(self):
-        return 0
 
 
 class ApplyGates(Compiler):
@@ -87,7 +63,9 @@ class ApplyGates(Compiler):
     target_nodes: List[TannerNode]
     gates: List[str]  # e.g. ["H"], ["X", "H"], etc.
 
-    def compile(self, memory: QuantumMemory) -> Tuple[List[str], Optional[EventTag]]:
+    def compile(
+        self, memory: QuantumMemory
+    ) -> Tuple[List[str], Optional[List[EventTag]]]:
         self.check_enough_memory(memory)
         stim_instructions = []
         for dq in self.target_nodes:
@@ -104,8 +82,8 @@ class ApplyGates(Compiler):
         return len(self.target_nodes)
 
 
-class DestructiveMeasurementCompiler(Compiler):
-    """Class representing the compiler for destructive measurement of all qubits in a Tanner graph."""
+class MeasurementCompiler(Compiler):
+    """Class representing the compiler for measurement of all qubits in a Tanner graph."""
 
     basis: PauliChar = Field(
         default=PauliChar.Z,
@@ -115,7 +93,7 @@ class DestructiveMeasurementCompiler(Compiler):
         default=True, description="Whether to free the qubits after measurement."
     )
     reset_qubits: bool = Field(
-        default=False,
+        default=True,
         description="Whether to reset the qubits after measurement. If True, the qubits will be reset to |0> state after measurement.",
     )
 
@@ -130,7 +108,8 @@ class DestructiveMeasurementCompiler(Compiler):
         self.check_enough_memory(memory)
         stim_instructions = []
         node_measured = []
-        if self.reset_qubits:
+        # If free qubits is true, we have to reset.
+        if self.reset_qubits or self.free_qubits:
             r_tag = "R"
         else:
             r_tag = ""
@@ -157,7 +136,6 @@ class DestructiveMeasurementCompiler(Compiler):
             tag=f"{self.tag}",
             type=EventType.OBSERVABLE,
             size=self.data.number_of_nodes,
-            support_id=uuid4(),
             measured_nodes=node_measured,
         )
 
@@ -166,6 +144,10 @@ class StabilisersMeasurementCompiler(Compiler):
     """Class representing the compiler for measurement of stabilisers in a quantum error-correcting code."""
 
     round: int
+    observable_included: Dict[str, Set[CheckNode]] = Field(
+        default_factory=dict,
+        description="Observables included in the stabiliser measurement. Each of them is represented as a set of the Check nodes that are included in the observable.",
+    )
     check_initial_state: PauliEigenState = Field(
         default=PauliEigenState.Z_plus,
         description="Initial state for the ancilla qubits used in stabiliser checks.",
@@ -260,7 +242,7 @@ class StabilisersMeasurementCompiler(Compiler):
                     raise ValueError(f"Unknown stabiliser type: {check.check_type}")
 
         for check in check_nodes:
-            base_stim_instructions.append(f"MRZ {memory.allocation[check.id]}")
+            base_stim_instructions.append(f"MZ {memory.allocation[check.id]}")
             measured.append(check)
         tab = " " * 4
         stim_instructions = (
@@ -269,13 +251,24 @@ class StabilisersMeasurementCompiler(Compiler):
             + ["}"]
         )
 
-        return stim_instructions, [
+        events = [
             EventTag(
                 tag=f"{self.tag}_round{i}",
                 type=EventType.STAB_MEASUREMENT,
                 size=len(check_nodes),
-                support_id=uuid4(),
                 measured_nodes=measured.copy(),
             )
             for i in range(self.round)
         ]
+        if self.observable_included:
+            for i, (key, obs) in enumerate(self.observable_included.items()):
+                events.append(
+                    EventTag(
+                        tag=f"{self.tag}_observable_{key}",
+                        type=EventType.OBSERVABLE,
+                        size=0,
+                        measured_nodes=list(obs),
+                    )
+                )
+
+        return (stim_instructions, events)

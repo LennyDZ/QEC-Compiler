@@ -1,25 +1,26 @@
+from collections import defaultdict
 from functools import cached_property
+from itertools import chain, combinations
 from typing import Dict, List, Set, Tuple
 from pydantic import BaseModel, ConfigDict
-from pydantic.dataclasses import dataclass
 
-from qldpc_sim.data_structure.pauli import PauliChar, PauliEigenState
-from qldpc_sim.data_structure.tanner_graph import (
+from ..data_structure import (
+    TannerGraph,
+    LogicalOperator,
     CheckNode,
     TannerEdge,
     TannerNode,
     VariableNode,
+    PauliEigenState,
+    PauliChar,
 )
-from qldpc_sim.data_structure.tanner_graph_algebra import plot_tanner_graph
-from qldpc_sim.qldpc_experiment.compilers import (
+from ..data_structure import TannerGraphAlgebra as tga
+from ..qldpc_experiment import (
+    PauliMeasurement,
     ApplyGates,
-    DestructiveMeasurementCompiler,
+    MeasurementCompiler,
     StabilisersMeasurementCompiler,
 )
-
-from ..data_structure import TannerGraph, LogicalOperator
-from ..data_structure import TannerGraphAlgebra as tga
-from ..qldpc_experiment import PauliMeasurement
 
 
 class CKBBJoint(BaseModel):
@@ -54,7 +55,7 @@ class CKBBMeasurement(PauliMeasurement):
     @cached_property
     def tanner_supports(self) -> Dict[LogicalOperator, TannerGraph]:
         tanners = {}
-        for lop in self.logical_target:
+        for lop in self.logical_targets:
             code = self.context.initial_assignement[lop]
             new_support = code.tanner_graph.get_support(
                 lop.target_nodes, lop.logical_type
@@ -136,7 +137,7 @@ class CKBBMeasurement(PauliMeasurement):
             set()
         )  # identify a set of all distinct codes involved in the measurement.
         tanner_codes = TannerGraph()  # Sum of tanner of codes involved (disconnected)
-        for lop in self.logical_target:
+        for lop in self.logical_targets:
             # if isinstance(lop, tuple):
             #     # All element of the tuple should have the same code assignement, if not it would mean a dataqubit is shared between two codes.
             #     code = self.context.initial_assignement[lop[0]]
@@ -146,7 +147,9 @@ class CKBBMeasurement(PauliMeasurement):
             distinct_code.add(lop_code.id)
 
         connecting_edges = []
-        for lop in self.logical_target:
+        check_anticommuting_with_lop = defaultdict(set)
+
+        for lop in self.logical_targets:
             code = self.context.initial_assignement[lop]
             # construct edges connecting the ancilla Tanner to the code Tanner.
             port = ancilla_tanners[lop].port
@@ -155,6 +158,20 @@ class CKBBMeasurement(PauliMeasurement):
                     p1 in code.tanner_graph.variable_nodes
                     and p2 in full_ancilla_tanner.check_nodes
                 ):
+                    # Check if any element of the opposite logical operator is measured by the ancilla system's stabilisers.
+                    for lqb in code.logical_qubits:
+                        if p2.check_type == CheckNode.CheckType.X:
+                            if p1 in lqb.logical_z.target_nodes:
+                                print(
+                                    f"Check {p2} anticommutes with logical operator {lqb.logical_z} because of node {p1}"
+                                )
+                                check_anticommuting_with_lop[lqb.logical_z].add(p2)
+                        if p2.check_type == CheckNode.CheckType.Z:
+                            if p1 in lqb.logical_x.target_nodes:
+                                print(
+                                    f"Check {p2} anticommutes with logical operator {lqb.logical_x} because of node {p1}"
+                                )
+                                check_anticommuting_with_lop[lqb.logical_x].add(p2)
                     connecting_edges.append(
                         TannerEdge(
                             variable_node=p1,
@@ -182,12 +199,14 @@ class CKBBMeasurement(PauliMeasurement):
             full_ancilla_tanner, tanner_codes, connecting_edges=connecting_edges
         )
         # V. Build compiler
-        basis = self.logical_target[0].logical_type
+        basis = self.logical_targets[0].logical_type
 
         if basis == PauliChar.X:
-            var_node_initial_state = PauliEigenState.X_plus
-        elif basis == PauliChar.Z:
+            check_type = CheckNode.CheckType.X
             var_node_initial_state = PauliEigenState.Z_plus
+        elif basis == PauliChar.Z:
+            check_type = CheckNode.CheckType.Z
+            var_node_initial_state = PauliEigenState.X_plus
         else:
             raise ValueError("Only X and Z measurement are supported for now.")
 
@@ -198,34 +217,37 @@ class CKBBMeasurement(PauliMeasurement):
                 gates=var_node_initial_state.pauli_from_zero(),
             ),
         ]
+        observable_nodes = {
+            "XX_outcome": set(
+                [
+                    n
+                    for n in full_ancilla_tanner.check_nodes
+                    if n.check_type == check_type
+                ]
+            ),
+        }
+
+        for k, v in check_anticommuting_with_lop.items():
+            i += 1
+            print(f"anticommute_with_{i}")
+            observable_nodes[f"anticommute_with_{i}"] = v
 
         stab_measurement = StabilisersMeasurementCompiler(
             data=merged_tanner,
             round=self.distance,
             tag=f"ckbb_stab_{self.tag}",
+            observable_included=observable_nodes,
         )
 
-        readout_ancilla = DestructiveMeasurementCompiler(
+        readout_ancilla = MeasurementCompiler(
             data=full_ancilla_tanner,
             tag=f"readout_ckbb_ancilla_{self.tag}",
-            basis=basis.dual(),
-            reset_qubits=False,
+            reset_qubits=True,
             free_qubits=True,
         )
-
-        # print(self.context.codes[0].tanner_graph.number_of_nodes)
-        # stab_measurement = StabilisersMeasurementCompiler(
-        #     data=self.context.codes[0].tanner_graph,
-        #     round=self.distance,
-        #     tag=f"split_{self.tag}",
-        # )
-        # stab_measurement = StabilisersMeasurementCompiler(
-        #     data=self.context.codes[1].tanner_graph,
-        #     round=self.distance,
-        #     tag=f"split_{self.tag}",
-        # )
         compilers.extend(init_ancilla)
         compilers.append(stab_measurement)
+
         compilers.append(readout_ancilla)
         return compilers
 

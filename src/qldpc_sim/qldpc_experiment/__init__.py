@@ -1,8 +1,7 @@
 from .compilers import (
     Compiler,
     ApplyGates,
-    DestructiveMeasurementCompiler,
-    LogicalPauliCompiler,
+    MeasurementCompiler,
     StabilisersMeasurementCompiler,
 )
 from .context import Context
@@ -24,8 +23,7 @@ __all__ = [
     "QECGadget",
     "InitializeCode",
     "ApplyGates",
-    "DestructiveMeasurementCompiler",
-    "LogicalPauliCompiler",
+    "MeasurementCompiler",
     "StabilisersMeasurementCompiler",
     "LogicalPauli",
     "LM",

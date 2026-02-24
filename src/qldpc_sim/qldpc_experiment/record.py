@@ -1,9 +1,9 @@
 from enum import Enum
 from typing import List
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
-from qldpc_sim.data_structure.tanner_graph import TannerNode
+from ..data_structure import TannerNode
 
 
 class EventType(Enum):
@@ -17,10 +17,11 @@ class EventTag(BaseModel):
     """Class to represent an event that produces measurement outcomes in a qLDPC experiment."""
 
     model_config = ConfigDict(frozen=True)
+    id: UUID = Field(default_factory=uuid4, init=False)
+
     type: EventType
     tag: str
     size: int
-    support_id: UUID
     measured_nodes: List[TannerNode] = Field(default_factory=list)
 
 
