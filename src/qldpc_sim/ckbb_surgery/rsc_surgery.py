@@ -92,7 +92,7 @@ class SurgeMeasurement(PauliMeasurement):
             stack = [bot]
             p = bot
             pc = None
-            for i in range(1, self.distance):
+            for i in range(1, self.distance - 1):
                 nc = [
                     check for check in v.index_by_variable[p] if check.check_node != pc
                 ][0].check_node

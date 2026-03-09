@@ -89,14 +89,14 @@ class InitializeCode(CodeGadget):
                 ApplyGates(
                     target_nodes=self.code.tanner_graph.variable_nodes,
                     gates=["H"],
-                    tag=f"Init_{self.tag}_logical_pauli",
+                    tag=f"{self.tag}_logical_pauli",
                 )
             )
 
         stabiliser = StabilisersMeasurementCompiler(
             data=self.code.tanner_graph,
             round=1,
-            tag=f"Init_{self.tag}_stab_meas",
+            tag=f"{self.tag}_stab_meas",
             observable_included={
                 f"z_stabs_{self.tag}": {
                     n
@@ -118,7 +118,7 @@ class InitializeCode(CodeGadget):
                     ApplyGates(
                         target_nodes=self.code.logical_qubits[0].logical_x.target_nodes,
                         gates=[PauliChar.X],
-                        tag=f"Init_{self.tag}_logical_pauli",
+                        tag=f"LX_{self.tag}_logical_pauli",
                     )
                 )
             case PauliEigenState.X_minus:
@@ -126,7 +126,7 @@ class InitializeCode(CodeGadget):
                     ApplyGates(
                         target_nodes=self.code.logical_qubits[0].logical_z.target_nodes,
                         gates=[PauliChar.Z],
-                        tag=f"Init_{self.tag}_logical_pauli",
+                        tag=f"LZ_{self.tag}_logical_pauli",
                     )
                 )
         return compilers
@@ -141,6 +141,7 @@ class LM(LogicGadget):
     def build_compiler_instructions(self) -> List[Compiler]:
         compilers = []
         lop = self.logical_targets[0]
+        print(f"lop_ {set(lop.target_nodes)}")
         # Build tanner with only var nodes corresponding to the logical qubit
         t = TannerGraph(
             variable_nodes=set(lop.target_nodes),

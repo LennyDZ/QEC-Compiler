@@ -226,11 +226,14 @@ class CKBBMeasurement(PauliMeasurement):
                 ]
             ),
         }
+        for n in full_ancilla_tanner.check_nodes:
+            observable_nodes[f"ckbb_check_{n.tag}_{n.check_type}"] = {n}
 
+        i = 1
         for k, v in check_anticommuting_with_lop.items():
-            i += 1
-            print(f"anticommute_with_{i}")
+            print(f"anticommute_with_{i}: {[n.tag for n in v]}")
             observable_nodes[f"anticommute_with_{i}"] = v
+            i += 1
 
         stab_measurement = StabilisersMeasurementCompiler(
             data=merged_tanner,
@@ -239,16 +242,22 @@ class CKBBMeasurement(PauliMeasurement):
             observable_included=observable_nodes,
         )
 
-        readout_ancilla = MeasurementCompiler(
-            data=full_ancilla_tanner,
-            tag=f"readout_ckbb_ancilla_{self.tag}",
-            reset_qubits=True,
-            free_qubits=True,
-        )
+        readout_ancilla = []
+        for v in full_ancilla_tanner.variable_nodes:
+            readout_ancilla.append(
+                MeasurementCompiler(
+                    data=TannerGraph(
+                        variable_nodes={v}, check_nodes=set(), edges=set()
+                    ),
+                    tag=f"ckbb_var_{v.tag}",
+                    basis=basis,
+                    reset_qubits=False,
+                    free_qubits=False,
+                )
+            )
         compilers.extend(init_ancilla)
         compilers.append(stab_measurement)
-
-        compilers.append(readout_ancilla)
+        compilers.extend(readout_ancilla)
         return compilers
 
     def _build_ancilla_tanner(self, support: TannerGraph) -> CKBBAncillaTanner:
