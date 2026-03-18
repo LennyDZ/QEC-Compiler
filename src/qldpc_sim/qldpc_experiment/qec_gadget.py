@@ -1,14 +1,14 @@
 from abc import abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 from pyparsing import ABC
 
-from qldpc_sim.data_structure.tanner_graph import CheckNode
 from qldpc_sim.qec_code.ec_code import ErrorCorrectionCode
+from .pauli_frame import FrameUpdate
+from .record import EventType, OutcomeSet
 from ..data_structure import LogicalOperator, TannerGraph, PauliChar, PauliEigenState
 from .context import Context
-from .quantum_memory import QuantumMemory
 from .compilers import (
     ApplyGates,
     Compiler,
@@ -23,7 +23,9 @@ class QECGadget(ABC, BaseModel):
     tag: str = Field(default="", init=False)
 
     @abstractmethod
-    def build_compiler_instructions(self, memory: QuantumMemory) -> List[Compiler]:
+    def build_compiler_instructions(
+        self,
+    ) -> Tuple[List[Compiler], List[OutcomeSet]]:
         pass
 
 
@@ -33,12 +35,18 @@ class CodeGadget(QECGadget):
 
 class LogicGadget(QECGadget):
     logical_targets: List[LogicalOperator]
+    frame_update: Optional[FrameUpdate] = Field(
+        default=None,
+        description="update to apply to the logical pauli frame when going through this gadget.",
+    )
 
 
 class LogicalPauli(LogicGadget):
     """Logical Pauli application gadget."""
 
-    def build_compiler_instructions(self) -> List[Compiler]:
+    def build_compiler_instructions(
+        self,
+    ) -> Tuple[List[Compiler], List[OutcomeSet]]:
         compilers = []
         # TODO: check compatibility of the differents logical operators (e.g. the support must not overlap (or only under specific conditions)
         for lop in self.logical_targets:
@@ -46,7 +54,7 @@ class LogicalPauli(LogicGadget):
                 target_nodes=lop.target_nodes, gates=[lop.logical_type], tag=self.tag
             )
             compilers.append(compiler)
-        return compilers
+        return compilers, []
 
 
 class StabMeasurement(CodeGadget):
@@ -55,7 +63,9 @@ class StabMeasurement(CodeGadget):
         description="Number of round of stabiliser measurement to perform.",
     )
 
-    def build_compiler_instructions(self) -> List[Compiler]:
+    def build_compiler_instructions(
+        self,
+    ) -> Tuple[List[Compiler], List[OutcomeSet]]:
 
         compilers = [
             StabilisersMeasurementCompiler(
@@ -64,7 +74,15 @@ class StabMeasurement(CodeGadget):
                 tag=f"StabMeasurement_{self.tag}",
             )
         ]
-        return compilers
+        outcomes = [
+            OutcomeSet(
+                tag=f"StabMeasurement_{self.tag}",
+                type=EventType.STAB_MEASUREMENT,
+                size=len(self.code.tanner_graph.check_nodes),
+                measured_nodes=set(self.code.tanner_graph.check_nodes),
+            )
+        ]
+        return compilers, outcomes
 
 
 class InitializeCode(CodeGadget):
@@ -74,7 +92,9 @@ class InitializeCode(CodeGadget):
 
     initial_state: PauliEigenState = Field(default=PauliEigenState.Z_plus)
 
-    def build_compiler_instructions(self) -> List[Compiler]:
+    def build_compiler_instructions(
+        self,
+    ) -> Tuple[List[Compiler], List[OutcomeSet]]:
         if len(self.code.logical_qubits) > 1:
             if self.initial_state != PauliEigenState.Z_plus:
                 raise ValueError(
@@ -129,7 +149,7 @@ class InitializeCode(CodeGadget):
                         tag=f"LZ_{self.tag}_logical_pauli",
                     )
                 )
-        return compilers
+        return compilers, []
 
 
 class LM(LogicGadget):
@@ -138,10 +158,9 @@ class LM(LogicGadget):
     tag: str = Field(default="Logical Measurement", init=False)
     basis: PauliChar = Field(default=PauliChar.Z)
 
-    def build_compiler_instructions(self) -> List[Compiler]:
+    def build_compiler_instructions(self) -> Tuple[List[Compiler], List[OutcomeSet]]:
         compilers = []
         lop = self.logical_targets[0]
-        print(f"lop_ {set(lop.target_nodes)}")
         # Build tanner with only var nodes corresponding to the logical qubit
         t = TannerGraph(
             variable_nodes=set(lop.target_nodes),
@@ -157,7 +176,16 @@ class LM(LogicGadget):
                 reset_qubits=False,
             )
         )
-        return compilers
+        outcomes = [
+            OutcomeSet(
+                tag=f"LogicalMeasurement_{self.tag}",
+                type=EventType.OBSERVABLE,
+                size=len(lop.target_nodes),
+                measured_nodes=set(lop.target_nodes),
+                target=lop,
+            )
+        ]
+        return compilers, outcomes
 
 
 class Readout(CodeGadget):
@@ -166,7 +194,7 @@ class Readout(CodeGadget):
     tag: str = Field(default="Readout")
     basis: PauliChar = Field(default=PauliChar.Z)
 
-    def build_compiler_instructions(self) -> List[Compiler]:
+    def build_compiler_instructions(self) -> Tuple[List[Compiler], List[OutcomeSet]]:
         compilers = []
         compilers.append(
             MeasurementCompiler(
@@ -176,8 +204,16 @@ class Readout(CodeGadget):
                 reset_qubits=False,
             )
         )
-        return compilers
+        outcomes = [
+            OutcomeSet(
+                tag=f"Readout_{self.tag}",
+                type=EventType.OBSERVABLE,
+                size=len(self.code.tanner_graph.variable_nodes),
+                measured_nodes=set(self.code.tanner_graph.variable_nodes),
+            )
+        ]
+        return compilers, outcomes
 
 
 class PauliMeasurement(LogicGadget):
-    controlled_action: LogicalPauli = Field(default=None, init=False)
+    pass

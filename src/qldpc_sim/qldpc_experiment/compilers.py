@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Set, Tuple
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..data_structure import (
     CheckNode,
@@ -11,7 +11,7 @@ from ..data_structure import (
     PauliChar,
     TannerGraph,
 )
-from .record import EventTag, EventType
+from .record import EventType, MeasurementOutcomes
 from .quantum_memory import QuantumMemory
 
 
@@ -49,8 +49,8 @@ class Compiler(ABC, BaseModel):
     @abstractmethod
     def compile(
         self, memory: QuantumMemory
-    ) -> Tuple[List[str], Optional[List[EventTag]]]:
-        """Compiles the operation into a list of stim instructions and an optional list of event tags."""
+    ) -> Tuple[List[str], MeasurementOutcomes | None]:
+        """Compiles the operation into a list of stim instructions and an optional list of measured nodes."""
         pass
 
 
@@ -65,7 +65,7 @@ class ApplyGates(Compiler):
 
     def compile(
         self, memory: QuantumMemory
-    ) -> Tuple[List[str], Optional[List[EventTag]]]:
+    ) -> Tuple[List[str], MeasurementOutcomes | None]:
         self.check_enough_memory(memory)
         stim_instructions = []
         for dq in self.target_nodes:
@@ -104,7 +104,9 @@ class MeasurementCompiler(Compiler):
     def qubits_cost(self):
         return 0
 
-    def compile(self, memory: QuantumMemory) -> Tuple[List[str], EventTag]:
+    def compile(
+        self, memory: QuantumMemory
+    ) -> Tuple[List[str], MeasurementOutcomes | None]:
         self.check_enough_memory(memory)
         stim_instructions = []
         node_measured = []
@@ -132,22 +134,20 @@ class MeasurementCompiler(Compiler):
 
                 if self.free_qubits:
                     memory.free_qubit(q.id)
-        return stim_instructions, EventTag(
-            tag=f"{self.tag}",
-            type=EventType.OBSERVABLE,
-            size=self.data.number_of_nodes,
+
+        outcomes = MeasurementOutcomes(
+            tag=self.tag,
+            size=len(node_measured),
             measured_nodes=node_measured,
         )
+
+        return (stim_instructions, outcomes)
 
 
 class StabilisersMeasurementCompiler(Compiler):
     """Class representing the compiler for measurement of stabilisers in a quantum error-correcting code."""
 
     round: int
-    observable_included: Dict[str, Set[CheckNode]] = Field(
-        default_factory=dict,
-        description="Observables included in the stabiliser measurement. Each of them is represented as a set of the Check nodes that are included in the observable.",
-    )
     check_initial_state: PauliEigenState = Field(
         default=PauliEigenState.Z_plus,
         description="Initial state for the ancilla qubits used in stabiliser checks.",
@@ -168,7 +168,9 @@ class StabilisersMeasurementCompiler(Compiler):
     def qubits_cost(self):
         return 0
 
-    def compile(self, memory: QuantumMemory) -> Tuple[List[str], List[EventTag]]:
+    def compile(
+        self, memory: QuantumMemory
+    ) -> Tuple[List[str], MeasurementOutcomes | None]:
         check_nodes = self.data.check_nodes
         base_stim_instructions = []
         measured = []  # keep track of the order of measurements for the event tag
@@ -251,24 +253,10 @@ class StabilisersMeasurementCompiler(Compiler):
             + ["}"]
         )
 
-        events = [
-            EventTag(
-                tag=f"{self.tag}_round{i}",
-                type=EventType.STAB_MEASUREMENT,
-                size=len(check_nodes),
-                measured_nodes=measured.copy(),
-            )
-            for i in range(self.round)
-        ]
-        if self.observable_included:
-            for i, (key, obs) in enumerate(self.observable_included.items()):
-                events.append(
-                    EventTag(
-                        tag=f"{self.tag}_observable_{key}",
-                        type=EventType.OBSERVABLE,
-                        size=0,
-                        measured_nodes=list(obs),
-                    )
-                )
+        outcomes = MeasurementOutcomes(
+            tag=f"{self.tag}_stab_meas",
+            size=len(check_nodes) * self.round,
+            measured_nodes=measured * self.round,
+        )
 
-        return (stim_instructions, events)
+        return (stim_instructions, outcomes)

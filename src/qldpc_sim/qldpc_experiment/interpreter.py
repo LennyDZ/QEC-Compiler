@@ -3,6 +3,12 @@ import stim
 import numpy as np
 
 
+def _node_key(node) -> str:
+    """Stable node identity key independent of human-readable tags."""
+    node_id = getattr(node, "id", None)
+    return str(node_id) if node_id is not None else str(hash(node))
+
+
 def xor_event_nodes(events: dict, event_name: str, tag: str | None = None) -> dict:
     """
     Compute per-sample XOR across outcome of a given event using ±1 encoding:
@@ -26,7 +32,6 @@ def xor_event_nodes(events: dict, event_name: str, tag: str | None = None) -> di
         for node_name, values in event_nodes.items()
         if tag is None or tag in node_name
     ]
-
     if not selected:
         return {event_name + (tag if tag else ""): []}
 
@@ -67,7 +72,7 @@ def run(context, program, num_samples=1):
     """Run a program and return the outcomes of the recorded events in a structured way.
 
     Return:
-        {event_name: {node_name: [values per sample]}}
+        {event_name: {node_id: [values per sample]}}
     """
     samples = compile_and_sample(context, program, num_samples=num_samples)
     node_latest_outcomes = defaultdict(dict)
@@ -79,15 +84,17 @@ def run(context, program, num_samples=1):
         ):  # Some observables are made of already recoreded results and have size 0, we skip those for now. This will be used later to build the detector error model.
 
             for n in r.measured_nodes:
-                node_latest_outcomes[n.tag] = global_idx
-                outcomes[r.tag][n.tag] = global_idx
+                node_key = _node_key(n)
+                node_latest_outcomes[node_key] = global_idx
+                outcomes[r.tag][node_key] = global_idx
 
                 if "bridge" in n.tag:
-                    outcomes["bridge"][n.tag] = global_idx
+                    outcomes["bridge"][node_key] = global_idx
                 global_idx += 1
         else:
             for n in r.measured_nodes:
-                outcomes[r.tag][n.tag] = node_latest_outcomes[n.tag]
+                node_key = _node_key(n)
+                outcomes[r.tag][node_key] = node_latest_outcomes[node_key]
 
     out_array = np.array(samples)
     sample_value = outcomes.copy()
@@ -134,8 +141,8 @@ def compile_and_sample(ctx, program, num_samples=10):
         # print(si)
 
         stim_instructions.extend(si)
-    for si in stim_instructions:
-        print(si)
+    # for si in stim_instructions:
+    #     print(si)
     circ = stim.Circuit("\n".join(stim_instructions))
 
     sampler = circ.compile_sampler()

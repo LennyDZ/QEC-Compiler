@@ -13,8 +13,10 @@ from .qec_gadget import (
     LM,
     InitializeCode,
     PauliMeasurement,
+    Readout,
 )
-from .record import MeasurementRecord, EventTag, EventType
+from .pauli_frame import FrameCorrection, FrameUpdate, FrameState, IdentityFrameUpdate
+from .record import MeasurementOutcomes, EventType, MeasurementRecord, OutcomeSet
 
 __all__ = [
     "Compiler",
@@ -29,7 +31,13 @@ __all__ = [
     "LM",
     "PauliMeasurement",
     "StabMeasurement",
+    "Readout",
     "MeasurementRecord",
-    "EventTag",
+    "MeasurementOutcomes",
+    "OutcomeSet",
     "EventType",
+    "FrameCorrection",
+    "FrameUpdate",
+    "FrameState",
+    "IdentityFrameUpdate",
 ]
