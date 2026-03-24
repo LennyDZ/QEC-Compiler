@@ -16,6 +16,7 @@ class TannerNode(BaseModel):
     Attributes:
         id (UUID): Unique identifier of the node.
         tag (str): human readable tag (mostly used for debugging).
+        coordinates (Tuple[int, ...]): coordinates of the node (only used for visualisation), default = ()
     """
 
     model_config = ConfigDict(frozen=True)
@@ -146,6 +147,13 @@ class TannerGraph(BaseModel):
                 index[edge.variable_node] = set()
             index[edge.variable_node].add(edge)
         return index
+    
+    @cached_property
+    def max_degree(self):
+        m = 0
+        for m in self.variable_nodes | self.check_nodes:
+            if self.degree(m)>m:
+                m = self.degree(m)
 
     def get_neighbourhood(self, node: TannerNode) -> Set[TannerNode]:
         """Returns the set of neighboring nodes connected to the given node."""

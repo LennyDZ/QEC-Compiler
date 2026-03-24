@@ -1,4 +1,5 @@
 untracked_nb/
+demo_notebooks/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

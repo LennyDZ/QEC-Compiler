@@ -103,28 +103,21 @@ class CKBBMeasurement(PauliMeasurement):
 
         # TODO: one may assume we could allow operator with mixed X and Z type. In this case, we need more complicated compiler instruction as some part of the ancilla must be init in X and some part in Z. For now we only allow measurement of parity involving only X or only Z operator.
         basis = self.logical_targets[0].logical_type
+
         for lop in self.logical_targets:
             if lop.logical_type != basis:
                 raise ValueError(
                     "Error in building measurement: logical operators have different type, this is not supported for now."
                 )
-
-        # Set the initial state of the ancilla
-        if basis == PauliChar.X:
-            check_type = PauliChar.X
-            var_node_initial_state = "RZ"
-        elif basis == PauliChar.Z:
-            check_type = PauliChar.Z
-            var_node_initial_state = "RX"
-        else:
-            raise ValueError("Only X and Z measurement are supported for now.")
-
+            
+        if basis not in {PauliChar.X, PauliChar.Z}:
+            return ValueError("Only measurement with component of the same pauli type is supported")
         # II. Build ancilla TannerGraphs
         lop_tanners = self.tanner_supports
         ancilla_tanners = {}
-        for lop, support in lop_tanners.items():
+        for i, (lop, support) in enumerate(lop_tanners.items()):
             # for each logical operator, build a CKBBAncillaTanner.
-            ancilla_tanners[lop] = self._build_ancilla_tanner(support)
+            ancilla_tanners[lop] = self._build_ancilla_tanner(support, system_coord=(1,i))
 
         # TODO: Order to optimize cost ? (added this earlier, not sure anymore how it can be improved)
 
@@ -210,6 +203,8 @@ class CKBBMeasurement(PauliMeasurement):
             full_ancilla_tanner, tanner_codes, connecting_edges=connecting_edges
         )
 
+        
+
         # Compute classical correction of logicals that commute with the supports used.
         anticommuting_lop_by_node = {}
         corrections = {}
@@ -228,33 +223,42 @@ class CKBBMeasurement(PauliMeasurement):
                         lq.logical_x if lq.logical_z == lop else lq.logical_z
                     )
                     break
-
+        
+        in_anc = {}
+        for ce in connecting_edges:
+            if ce.check_node in anticommuting_lop_by_node.keys():
+                in_anc[ce.variable_node] = anticommuting_lop_by_node[ce.check_node]
+            if ce.variable_node in anticommuting_lop_by_node.keys():
+                in_anc[ce.check_node] = anticommuting_lop_by_node[ce.variable_node]
         meeting, paths = tga.best_meeting_node(
-            merged_tanner, anticommuting_lop_by_node.keys(), check_type=basis
+            full_ancilla_tanner, in_anc.keys(), check_type=basis
         )
+
+        
 
         # Keep the shared meeting node in exactly one correction path so bridge
         # information is retained once, while avoiding duplicate counting.
         meeting_keeper = None
-        for node in anticommuting_lop_by_node.keys():
+        for node in in_anc.keys():
             if meeting in paths[node]:
                 meeting_keeper = node
                 break
 
-        for node, lop in anticommuting_lop_by_node.items():
-            path_nodes = list(paths[node])
+        anticommuting_nodes = set(in_anc.keys())
+        for node, lop in in_anc.items():
+            path_nodes = [n for n in paths[node] if n not in anticommuting_nodes]
             if meeting in path_nodes and node != meeting_keeper:
                 path_nodes.remove(meeting)
-
             corrections[lop] = {n for n in path_nodes if isinstance(n, VariableNode)}
-
+        
         # V. Build compiler
+        tga.visualize(merged_tanner, highlight_nodes={n for nodes in corrections.values() for n in nodes}, invert_y_rows={1, 2})
 
         init_ancilla = [
             ApplyGates(
                 tag=f"init_{self.tag}",
                 target_nodes=full_ancilla_tanner.variable_nodes,
-                gates=[var_node_initial_state],
+                gates=["RX"] if basis.dual() == PauliChar.X else ["RZ"],
             ),
         ]
 
@@ -287,7 +291,7 @@ class CKBBMeasurement(PauliMeasurement):
 
         outcomes = []
         stab_in_ancilla = set(
-            [n for n in full_ancilla_tanner.check_nodes if n.check_type == check_type]
+            [n for n in full_ancilla_tanner.check_nodes if n.check_type == basis]
         )
         parity_outcome_nodes = OutcomeSet(
             tag=f"{self.tag}_parity_outcome",
@@ -299,15 +303,14 @@ class CKBBMeasurement(PauliMeasurement):
         outcomes.append(parity_outcome_nodes)
         # Logical correction :
         for lop, cond_nodes in corrections.items():
-            correction_nodes = set(cond_nodes) & measured_nodes_in_gadget
-            if not correction_nodes:
+            if not cond_nodes:
                 continue
             outcomes.append(
                 OutcomeSet(
                     tag=f"{self.tag}log_corr_{lop.id}",
                     type=EventType.FRAME_CORRECTION,
-                    size=len(correction_nodes),
-                    measured_nodes=correction_nodes,
+                    size=len(cond_nodes),
+                    measured_nodes=cond_nodes,
                     target=lop,
                 )
             )
@@ -315,13 +318,13 @@ class CKBBMeasurement(PauliMeasurement):
         return compilers, outcomes
 
     def _build_ancilla_tanner(
-        self, support: TannerGraph, system_coord: int = None
+        self, support: TannerGraph, system_coord: Tuple[int, ...]
     ) -> CKBBAncillaTanner:
         """Build the layered ancilla tanner for a given logical support (support is a subset of a code)"""
-
+        system_coord = system_coord if system_coord else (0,)
         # Layer 1 is the dual of the support, its qubits are the "port", i.e. the connection points between the ancilla and the code TannerGraph.
         # map_between is a map from node id of the support to those of the port.
-        bottom_layer, map_between = tga.dual_graph(support)
+        bottom_layer, map_between = tga.dual_graph(support, system_coord=system_coord, layer_coord=0)
 
         # indexing nodes in order to keep track of the mapping between layers, and identify joints.
         prev_idx = tga.index_nodes(bottom_layer)
@@ -332,7 +335,7 @@ class CKBBMeasurement(PauliMeasurement):
 
         # add 2*r-2 layers interleaving the dual and primal of the support TannerGraph, and connect them with edges between corresponding nodes. Identify joints along the way.
         for r in range(2 * self.distance - 2):
-            v, vidx = tga.indexed_dual_graph(prev_tanner, prev_idx)
+            v, vidx = tga.indexed_dual_graph(prev_tanner, prev_idx, system_coord=system_coord, layer_coord=r + 1)
             inter_layer_edges = []
 
             for n_idx, node in prev_idx.items():
@@ -409,6 +412,7 @@ class CKBBMeasurement(PauliMeasurement):
                 new_check = CheckNode(
                     tag=f"bc_l{i}_{check_type}",
                     check_type=check_type,
+                    coordinates=(0, i, 2, 0)
                 )
                 edge1 = TannerEdge(
                     variable_node=s1,
@@ -437,6 +441,7 @@ class CKBBMeasurement(PauliMeasurement):
                 c_type = s1.check_type
                 new_variable = VariableNode(
                     tag=f"bv_l{i}",
+                    coordinates=(0, i, 2, 0)
                 )
                 edge1 = TannerEdge(
                     variable_node=new_variable,

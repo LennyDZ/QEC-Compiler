@@ -68,7 +68,7 @@ class ToricCode(CSSCode):
 
     @staticmethod
     def _build_default_logicals(
-        distance: int, var_coordinate: Dict[int, Tuple[int, int]]
+        distance: int, var_coordinate: Dict[int, Tuple[int, ...]]
     ) -> List[Tuple[List[int], List[int]]]:
         L = 2 * distance
         n = len(var_coordinate)
@@ -81,7 +81,8 @@ class ToricCode(CSSCode):
         x_h = [0] * n
         x_v = [0] * n
 
-        for i, (r, c) in var_coordinate.items():
+        for i, coord in var_coordinate.items():
+            r, c = coord[:2]
             # In this checkerboard embedding:
             # - horizontal edges are (even r, odd c)
             # - vertical edges are (odd r, even c)
@@ -104,9 +105,20 @@ class ToricCode(CSSCode):
         ]
 
     @classmethod
-    def from_distance(cls, distance: int, code_name: str = "toric") -> "ToricCode":
+    def from_distance(cls, distance: int, code_name: str = "toric", system_coordinate: Tuple[int, int] = (0, 0)) -> "ToricCode":
         hx, hz, var_coordinate, check_coordinate = ToricCode._build_css_pcm(distance)
+        
+        var_coordinate = {
+            i: (coord[0], coord[1],) + system_coordinate
+            for i, coord in var_coordinate.items()
+        }
+        check_coordinate = {
+            i: (coord[0], coord[1],) + system_coordinate
+            for i, coord in check_coordinate.items()
+        }
+
         logical_qubits = ToricCode._build_default_logicals(distance, var_coordinate)
+        
         code = cls.from_css_pcm(
             code_name=code_name,
             hx=hx,

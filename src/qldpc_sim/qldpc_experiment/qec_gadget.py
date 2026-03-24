@@ -1,8 +1,7 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
-from pyparsing import ABC
 
 from qldpc_sim.qec_code.ec_code import ErrorCorrectionCode
 from .pauli_frame import FrameUpdate

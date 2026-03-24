@@ -1,6 +1,6 @@
 import random
 from collections import deque
-from typing import Dict, List, Tuple
+from typing import Dict, List, Set, Tuple
 from .pauli import PauliChar
 from .tanner_graph import CheckNode, TannerEdge, TannerGraph, TannerNode, VariableNode
 
@@ -57,7 +57,7 @@ class TannerGraphAlgebra:
         )
 
     def dual_graph(
-        graph: TannerGraph, system_coord: int = None
+        graph: TannerGraph, system_coord: Tuple[int, int] = (0, 0), layer_coord: int = 0
     ) -> Tuple[TannerGraph, Dict[TannerNode, TannerNode]]:
         """Return a dual of the Tanner graph. A dual graph is constructed by swapping the variable and check nodes, and connecting them according to the original edges. The Pauli checked on the edges are also dualized (X<->Z, Y->Y).
 
@@ -65,8 +65,8 @@ class TannerGraphAlgebra:
         ----------
         graph : TannerGraph
             The Tanner graph to be dualized.
-        system_coord : int, optional
-            The system coordinate for the dual graph, by default None.
+        system_coord : Tuple[int, int], optional
+            The system coordinate for the dual graph, by default (0, 0).
 
         Returns
         -------
@@ -84,16 +84,36 @@ class TannerGraphAlgebra:
 
         check_node = random.choice(tuple(graph.check_nodes))
         check_type = check_node.check_type.dual()
-
+        
+        coord_index = 0
+        variable_nodes_with_coords = [
+            node for node in graph.variable_nodes if len(node.coordinates) >= 2
+        ]
+        if variable_nodes_with_coords:
+            first_coord_changes = (
+                len({node.coordinates[0] for node in variable_nodes_with_coords}) > 1
+            )
+            second_coord_changes = (
+                len({node.coordinates[1] for node in variable_nodes_with_coords}) > 1
+            )
+            if second_coord_changes and not first_coord_changes:
+                coord_index = 1
         check_to_variable = {
-            check: VariableNode(tag=dual_tag(check.tag)) for check in graph.check_nodes
+            check: VariableNode(tag=dual_tag(check.tag), coordinates=(
+                    (check.coordinates[coord_index], layer_coord) + system_coord
+                    if check.coordinates else system_coord
+                ),) for i, check in enumerate(sorted(graph.check_nodes, key=lambda x: x.coordinates if x.coordinates else ()))
         }
         variable_to_check = {
             variable: CheckNode(
                 tag=dual_tag(variable.tag),
                 check_type=check_type,
+                coordinates=(
+                    (variable.coordinates[coord_index], layer_coord) + system_coord
+                    if variable.coordinates else system_coord
+                ),
             )
-            for variable in graph.variable_nodes
+            for i, variable in enumerate(sorted(graph.variable_nodes, key=lambda x: x.coordinates if x.coordinates else ()))
         }
 
         dual_variable_nodes = set(check_to_variable.values())
@@ -120,10 +140,10 @@ class TannerGraphAlgebra:
         )
 
     def indexed_dual_graph(
-        graph: TannerGraph, index: Dict[int, TannerNode]
+        graph: TannerGraph, index: Dict[int, TannerNode], system_coord: Tuple[int, int] = (0, 0), layer_coord: int = 0
     ) -> Tuple[TannerGraph, Dict[int, TannerNode]]:
         """Return the dual Tanner graph and an assignment of integers, corresponding to the structure of the original graph."""
-        dual_graph, old_to_new_nodes = TannerGraphAlgebra.dual_graph(graph)
+        dual_graph, old_to_new_nodes = TannerGraphAlgebra.dual_graph(graph, system_coord=system_coord, layer_coord=layer_coord)
         n_index = {idx: old_to_new_nodes[node] for idx, node in index.items()}
         return dual_graph, n_index
 
@@ -243,8 +263,33 @@ class TannerGraphAlgebra:
 
         return best_node, best_paths
 
-    def visualize(graph: TannerGraph, periodic: bool = False):
-        """Plot the TannerGraph, with variable nodes as circles and check nodes as squares. Edges are colored according to the Pauli type they check (e.g. X in red, Z in blue, Y in purple). Node tags are displayed next to the nodes for clarity."""
+    def visualize(
+        graph: TannerGraph,
+        periodic: bool = True,
+        highlight_nodes: Set[TannerNode] | None = None,
+        invert_y_rows: Set[int] | None = None,
+    ):
+        """Plot the TannerGraph, with variable nodes as circles and check nodes as squares. Edges are colored according to the Pauli type they check (e.g. X in red, Z in blue, Y in purple). Node tags are displayed next to the nodes for clarity.
+
+        Coordinates or nodes (if provided) are used as follow: 
+            - 1d and 2d coordinates are used to arrange positions of nodes on a planar graph
+            - 3d coordinates are used to build several system graph. The 3rd coordinates define which system the node belongs to.
+            - 4d coordinates are used to separate a tanner graph in several "systems". The two first coords desribe the positition of the nodes
+            within the planar system. And the two last ones describe the position of this systen wrt. Other systems.
+
+        Parameters
+        ----------
+        graph : TannerGraph
+            Tanner graph to visualize.
+        periodic : bool
+            Whether to render wrap-around edges explicitly for 2D toroidal layouts.
+        highlight_nodes : Set[TannerNode] | None
+            Optional set of nodes to highlight in the plot.
+        invert_y_rows : Set[int] | None
+            Optional set of row indices whose subplots should have their Y axis
+            inverted.  Applies to 3D and 4D multiplot layouts.  When ``None``,
+            defaults to ``{1}`` (the previous hard-coded behaviour).
+        """
         import matplotlib.pyplot as plt
         from matplotlib.lines import Line2D
         from matplotlib.patches import ConnectionPatch
@@ -256,6 +301,7 @@ class TannerGraphAlgebra:
         }
 
         all_nodes = list(graph.variable_nodes) + list(graph.check_nodes)
+        highlight_nodes = set(highlight_nodes or set()) & set(all_nodes)
         if not all_nodes:
             fig, ax = plt.subplots(figsize=(6, 4))
             ax.set_title("Empty Tanner Graph")
@@ -269,8 +315,8 @@ class TannerGraphAlgebra:
             raise ValueError("All node coordinates must have the same dimension.")
 
         dim = coord_lengths.pop()
-        if dim not in {0, 2, 3}:
-            raise ValueError("Node coordinates must be empty, 2D, or 3D.")
+        if dim not in {0, 2, 3, 4}:
+            raise ValueError("Node coordinates must be empty, 2D, 3D, or 4D.")
 
         def _draw_single_axis(ax, pos):
             for edge in graph.edges:
@@ -288,9 +334,14 @@ class TannerGraphAlgebra:
             var_nodes = sorted(graph.variable_nodes, key=lambda n: n.tag)
             check_nodes = sorted(graph.check_nodes, key=lambda n: n.tag)
 
+            highlighted_var_nodes = [n for n in var_nodes if n in highlight_nodes]
+            regular_var_nodes = [n for n in var_nodes if n not in highlight_nodes]
+            highlighted_check_nodes = [n for n in check_nodes if n in highlight_nodes]
+            regular_check_nodes = [n for n in check_nodes if n not in highlight_nodes]
+
             ax.scatter(
-                [pos[n][0] for n in var_nodes],
-                [pos[n][1] for n in var_nodes],
+                [pos[n][0] for n in regular_var_nodes],
+                [pos[n][1] for n in regular_var_nodes],
                 marker="o",
                 s=120,
                 color="black",
@@ -298,14 +349,37 @@ class TannerGraphAlgebra:
                 label="Variable",
             )
             ax.scatter(
-                [pos[n][0] for n in check_nodes],
-                [pos[n][1] for n in check_nodes],
+                [pos[n][0] for n in regular_check_nodes],
+                [pos[n][1] for n in regular_check_nodes],
                 marker="s",
                 s=130,
                 color="dimgray",
                 zorder=3,
                 label="Check",
             )
+
+            if highlighted_var_nodes:
+                ax.scatter(
+                    [pos[n][0] for n in highlighted_var_nodes],
+                    [pos[n][1] for n in highlighted_var_nodes],
+                    marker="o",
+                    s=180,
+                    color="black",
+                    edgecolors="gold",
+                    linewidths=2.2,
+                    zorder=4,
+                )
+            if highlighted_check_nodes:
+                ax.scatter(
+                    [pos[n][0] for n in highlighted_check_nodes],
+                    [pos[n][1] for n in highlighted_check_nodes],
+                    marker="s",
+                    s=190,
+                    color="dimgray",
+                    edgecolors="gold",
+                    linewidths=2.2,
+                    zorder=4,
+                )
 
             for node in var_nodes + check_nodes:
                 x, y = pos[node]
@@ -322,6 +396,20 @@ class TannerGraphAlgebra:
                 Line2D([0], [0], color="tab:blue", label="Z edge"),
                 Line2D([0], [0], color="tab:purple", label="Y edge"),
             ]
+            if highlight_nodes:
+                legend_items.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        linestyle="",
+                        markerfacecolor="white",
+                        markeredgecolor="gold",
+                        markeredgewidth=2.2,
+                        color="gold",
+                        label="Highlighted",
+                    )
+                )
             ax.legend(handles=legend_items, loc="best", fontsize=8)
             ax.set_aspect("equal", adjustable="datalim")
             ax.grid(alpha=0.12, linewidth=0.6, linestyle=":")
@@ -483,9 +571,14 @@ class TannerGraphAlgebra:
             var_nodes = sorted(graph.variable_nodes, key=lambda n: n.tag)
             check_nodes = sorted(graph.check_nodes, key=lambda n: n.tag)
 
+            highlighted_var_nodes = [n for n in var_nodes if n in highlight_nodes]
+            regular_var_nodes = [n for n in var_nodes if n not in highlight_nodes]
+            highlighted_check_nodes = [n for n in check_nodes if n in highlight_nodes]
+            regular_check_nodes = [n for n in check_nodes if n not in highlight_nodes]
+
             ax.scatter(
-                [pos[n][0] for n in var_nodes],
-                [pos[n][1] for n in var_nodes],
+                [pos[n][0] for n in regular_var_nodes],
+                [pos[n][1] for n in regular_var_nodes],
                 marker="o",
                 s=120,
                 color="black",
@@ -493,14 +586,37 @@ class TannerGraphAlgebra:
                 label="Variable",
             )
             ax.scatter(
-                [pos[n][0] for n in check_nodes],
-                [pos[n][1] for n in check_nodes],
+                [pos[n][0] for n in regular_check_nodes],
+                [pos[n][1] for n in regular_check_nodes],
                 marker="s",
                 s=130,
                 color="dimgray",
                 zorder=3,
                 label="Check",
             )
+
+            if highlighted_var_nodes:
+                ax.scatter(
+                    [pos[n][0] for n in highlighted_var_nodes],
+                    [pos[n][1] for n in highlighted_var_nodes],
+                    marker="o",
+                    s=180,
+                    color="black",
+                    edgecolors="gold",
+                    linewidths=2.2,
+                    zorder=4,
+                )
+            if highlighted_check_nodes:
+                ax.scatter(
+                    [pos[n][0] for n in highlighted_check_nodes],
+                    [pos[n][1] for n in highlighted_check_nodes],
+                    marker="s",
+                    s=190,
+                    color="dimgray",
+                    edgecolors="gold",
+                    linewidths=2.2,
+                    zorder=4,
+                )
 
             for node in var_nodes + check_nodes:
                 x, y = pos[node]
@@ -517,6 +633,20 @@ class TannerGraphAlgebra:
                 Line2D([0], [0], color="tab:blue", label="Z edge"),
                 Line2D([0], [0], color="tab:purple", label="Y edge"),
             ]
+            if highlight_nodes:
+                legend_items.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        linestyle="",
+                        markerfacecolor="white",
+                        markeredgecolor="gold",
+                        markeredgewidth=2.2,
+                        color="gold",
+                        label="Highlighted",
+                    )
+                )
             ax.legend(handles=legend_items, loc="best", fontsize=8)
             ax.set_aspect("equal", adjustable="datalim")
             ax.grid(alpha=0.12, linewidth=0.6, linestyle=":")
@@ -525,25 +655,169 @@ class TannerGraphAlgebra:
             ax.set_title("Tanner Graph (2D Toroidal Coordinates)")
             return fig, ax
 
-        planes = sorted({node.coordinates[2] for node in all_nodes})
+        if dim == 3:
+            planes = sorted({node.coordinates[2] for node in all_nodes})
+            n_rows = 2
+            n_cols = (len(planes) + n_rows - 1) // n_rows
+            fig, axes = plt.subplots(
+                n_rows,
+                n_cols,
+                figsize=(6 * n_cols, 5 * n_rows),
+                squeeze=False,
+            )
+            axes_flat = list(axes.ravel())
+            axes_list = axes_flat[: len(planes)]
+            for ax in axes_flat[len(planes) :]:
+                ax.set_axis_off()
+            plane_to_ax = {plane: axes_list[i] for i, plane in enumerate(planes)}
+            plane_to_row = {plane: i // n_cols for i, plane in enumerate(planes)}
+
+            pos_2d = {
+                node: (node.coordinates[0], node.coordinates[1]) for node in all_nodes
+            }
+            cross_plane_edges = []
+            for edge in graph.edges:
+                p_var = edge.variable_node.coordinates[2]
+                p_chk = edge.check_node.coordinates[2]
+                if p_var == p_chk:
+                    ax = plane_to_ax[p_var]
+                    x1, y1 = pos_2d[edge.variable_node]
+                    x2, y2 = pos_2d[edge.check_node]
+                    ax.plot(
+                        [x1, x2],
+                        [y1, y2],
+                        color=edge_color.get(edge.pauli_checked, "gray"),
+                        linewidth=1.6,
+                        alpha=0.85,
+                        zorder=1,
+                    )
+                else:
+                    cross_plane_edges.append(edge)
+
+            for plane, ax in plane_to_ax.items():
+                plane_var = sorted(
+                    [n for n in graph.variable_nodes if n.coordinates[2] == plane],
+                    key=lambda n: n.tag,
+                )
+                plane_check = sorted(
+                    [n for n in graph.check_nodes if n.coordinates[2] == plane],
+                    key=lambda n: n.tag,
+                )
+
+                if plane_var:
+                    regular_plane_var = [n for n in plane_var if n not in highlight_nodes]
+                    highlighted_plane_var = [n for n in plane_var if n in highlight_nodes]
+                    ax.scatter(
+                        [pos_2d[n][0] for n in regular_plane_var],
+                        [pos_2d[n][1] for n in regular_plane_var],
+                        marker="o",
+                        s=120,
+                        color="black",
+                        zorder=3,
+                    )
+                    if highlighted_plane_var:
+                        ax.scatter(
+                            [pos_2d[n][0] for n in highlighted_plane_var],
+                            [pos_2d[n][1] for n in highlighted_plane_var],
+                            marker="o",
+                            s=180,
+                            color="black",
+                            edgecolors="gold",
+                            linewidths=2.2,
+                            zorder=4,
+                        )
+                if plane_check:
+                    regular_plane_check = [n for n in plane_check if n not in highlight_nodes]
+                    highlighted_plane_check = [n for n in plane_check if n in highlight_nodes]
+                    ax.scatter(
+                        [pos_2d[n][0] for n in regular_plane_check],
+                        [pos_2d[n][1] for n in regular_plane_check],
+                        marker="s",
+                        s=130,
+                        color="dimgray",
+                        zorder=3,
+                    )
+                    if highlighted_plane_check:
+                        ax.scatter(
+                            [pos_2d[n][0] for n in highlighted_plane_check],
+                            [pos_2d[n][1] for n in highlighted_plane_check],
+                            marker="s",
+                            s=190,
+                            color="dimgray",
+                            edgecolors="gold",
+                            linewidths=2.2,
+                            zorder=4,
+                        )
+
+                for node in plane_var + plane_check:
+                    x, y = pos_2d[node]
+                    ax.text(x + 0.03, y + 0.03, node.tag, fontsize=8)
+
+                ax.set_title(f"Plane {plane}")
+                ax.set_aspect("equal", adjustable="datalim")
+                _invert_y_rows = {1} if invert_y_rows is None else invert_y_rows
+                if plane_to_row[plane] in _invert_y_rows:
+                    ax.invert_yaxis()
+                ax.grid(alpha=0.12, linewidth=0.6, linestyle=":")
+
+            for edge in cross_plane_edges:
+                x1, y1 = pos_2d[edge.variable_node]
+                x2, y2 = pos_2d[edge.check_node]
+                a1 = plane_to_ax[edge.variable_node.coordinates[2]]
+                a2 = plane_to_ax[edge.check_node.coordinates[2]]
+                connector = ConnectionPatch(
+                    xyA=(x1, y1),
+                    xyB=(x2, y2),
+                    coordsA="data",
+                    coordsB="data",
+                    axesA=a1,
+                    axesB=a2,
+                    color=edge_color.get(edge.pauli_checked, "gray"),
+                    linestyle="--",
+                    linewidth=1.1,
+                    alpha=0.7,
+                )
+                fig.add_artist(connector)
+
+            fig.suptitle("Tanner Graph (3D Coordinates by Plane)")
+            fig.tight_layout()
+            return fig, axes_list
+
+        systems = sorted({(node.coordinates[2], node.coordinates[3]) for node in all_nodes})
+        if any(sys_r < 0 or sys_c < 0 for sys_r, sys_c in systems):
+            raise ValueError(
+                "For 4D coordinates, system coordinates must be non-negative integers."
+            )
+        n_rows = max(sys_r for sys_r, _ in systems) + 1
+        n_cols = max(sys_c for _, sys_c in systems) + 1
+
         fig, axes = plt.subplots(
-            1,
-            len(planes),
-            figsize=(6 * len(planes), 5),
+            n_rows,
+            n_cols,
+            figsize=(6 * n_cols, 5 * n_rows),
             squeeze=False,
         )
-        axes_list = list(axes[0])
-        plane_to_ax = {plane: axes_list[i] for i, plane in enumerate(planes)}
 
-        pos_2d = {
-            node: (node.coordinates[0], node.coordinates[1]) for node in all_nodes
-        }
-        cross_plane_edges = []
+        system_to_ax = {system: axes[system[0], system[1]] for system in systems}
+        for row_idx in range(n_rows):
+            for col_idx in range(n_cols):
+                if (row_idx, col_idx) not in system_to_ax:
+                    axes[row_idx, col_idx].set_axis_off()
+
+        axes_list = [system_to_ax[system] for system in systems]
+        system_to_display_row = {system: system[0] for system in systems}
+
+        pos_2d = {node: (node.coordinates[0], node.coordinates[1]) for node in all_nodes}
+
+        cross_system_edges = []
         for edge in graph.edges:
-            p_var = edge.variable_node.coordinates[2]
-            p_chk = edge.check_node.coordinates[2]
-            if p_var == p_chk:
-                ax = plane_to_ax[p_var]
+            s_var = (
+                edge.variable_node.coordinates[2],
+                edge.variable_node.coordinates[3],
+            )
+            s_chk = (edge.check_node.coordinates[2], edge.check_node.coordinates[3])
+            if s_var == s_chk:
+                ax = system_to_ax[s_var]
                 x1, y1 = pos_2d[edge.variable_node]
                 x2, y2 = pos_2d[edge.check_node]
                 ax.plot(
@@ -555,50 +829,92 @@ class TannerGraphAlgebra:
                     zorder=1,
                 )
             else:
-                cross_plane_edges.append(edge)
+                cross_system_edges.append(edge)
 
-        for plane, ax in plane_to_ax.items():
-            plane_var = sorted(
-                [n for n in graph.variable_nodes if n.coordinates[2] == plane],
+        for system, ax in system_to_ax.items():
+            system_var = sorted(
+                [
+                    n
+                    for n in graph.variable_nodes
+                    if (n.coordinates[2], n.coordinates[3]) == system
+                ],
                 key=lambda n: n.tag,
             )
-            plane_check = sorted(
-                [n for n in graph.check_nodes if n.coordinates[2] == plane],
+            system_check = sorted(
+                [
+                    n
+                    for n in graph.check_nodes
+                    if (n.coordinates[2], n.coordinates[3]) == system
+                ],
                 key=lambda n: n.tag,
             )
 
-            if plane_var:
+            if system_var:
+                regular_system_var = [n for n in system_var if n not in highlight_nodes]
+                highlighted_system_var = [n for n in system_var if n in highlight_nodes]
                 ax.scatter(
-                    [pos_2d[n][0] for n in plane_var],
-                    [pos_2d[n][1] for n in plane_var],
+                    [pos_2d[n][0] for n in regular_system_var],
+                    [pos_2d[n][1] for n in regular_system_var],
                     marker="o",
                     s=120,
                     color="black",
                     zorder=3,
                 )
-            if plane_check:
+                if highlighted_system_var:
+                    ax.scatter(
+                        [pos_2d[n][0] for n in highlighted_system_var],
+                        [pos_2d[n][1] for n in highlighted_system_var],
+                        marker="o",
+                        s=180,
+                        color="black",
+                        edgecolors="gold",
+                        linewidths=2.2,
+                        zorder=4,
+                    )
+            if system_check:
+                regular_system_check = [n for n in system_check if n not in highlight_nodes]
+                highlighted_system_check = [n for n in system_check if n in highlight_nodes]
                 ax.scatter(
-                    [pos_2d[n][0] for n in plane_check],
-                    [pos_2d[n][1] for n in plane_check],
+                    [pos_2d[n][0] for n in regular_system_check],
+                    [pos_2d[n][1] for n in regular_system_check],
                     marker="s",
                     s=130,
                     color="dimgray",
                     zorder=3,
                 )
+                if highlighted_system_check:
+                    ax.scatter(
+                        [pos_2d[n][0] for n in highlighted_system_check],
+                        [pos_2d[n][1] for n in highlighted_system_check],
+                        marker="s",
+                        s=190,
+                        color="dimgray",
+                        edgecolors="gold",
+                        linewidths=2.2,
+                        zorder=4,
+                    )
 
-            for node in plane_var + plane_check:
+            for node in system_var + system_check:
                 x, y = pos_2d[node]
                 ax.text(x + 0.03, y + 0.03, node.tag, fontsize=8)
 
-            ax.set_title(f"Plane {plane}")
+            ax.set_title(f"System {system}")
             ax.set_aspect("equal", adjustable="datalim")
+            _invert_y_rows = {1} if invert_y_rows is None else invert_y_rows
+            if system_to_display_row[system] in _invert_y_rows:
+                ax.invert_yaxis()
             ax.grid(alpha=0.12, linewidth=0.6, linestyle=":")
 
-        for edge in cross_plane_edges:
+        for edge in cross_system_edges:
             x1, y1 = pos_2d[edge.variable_node]
             x2, y2 = pos_2d[edge.check_node]
-            a1 = plane_to_ax[edge.variable_node.coordinates[2]]
-            a2 = plane_to_ax[edge.check_node.coordinates[2]]
+            s1 = (
+                edge.variable_node.coordinates[2],
+                edge.variable_node.coordinates[3],
+            )
+            s2 = (edge.check_node.coordinates[2], edge.check_node.coordinates[3])
+            a1 = system_to_ax[s1]
+            a2 = system_to_ax[s2]
             connector = ConnectionPatch(
                 xyA=(x1, y1),
                 xyB=(x2, y2),
@@ -613,6 +929,6 @@ class TannerGraphAlgebra:
             )
             fig.add_artist(connector)
 
-        fig.suptitle("Tanner Graph (3D Coordinates by Plane)")
+        fig.suptitle("Tanner Graph (4D Coordinates by System)")
         fig.tight_layout()
         return fig, axes_list

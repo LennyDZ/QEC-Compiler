@@ -96,7 +96,7 @@ class RotatedSurfaceCode(CSSCode):
 
     @staticmethod
     def _build_default_logicals(
-        distance: int, var_coordinate: Dict[int, Tuple[int, int]]
+        distance: int, var_coordinate: Dict[int, Tuple[int, ...]]
     ) -> List[Tuple[List[int], List[int]]]:
         _ = distance
         n = len(var_coordinate)
@@ -104,7 +104,8 @@ class RotatedSurfaceCode(CSSCode):
         logical_z = [0] * n
 
         # Boundary logicals for rotated patch (open boundaries).
-        for i, (x, y) in var_coordinate.items():
+        for i, coord in var_coordinate.items():
+            x, y = coord[:2]
             if x == 0:
                 logical_x[i] = 1
             if y == 0:
@@ -114,10 +115,21 @@ class RotatedSurfaceCode(CSSCode):
 
     @classmethod
     def from_distance(
-        cls, distance: int, code_name: str = "rotated_surface"
+        cls, distance: int, code_name: str = "rotated_surface", system_coordinate: Tuple[int, int] = (0, 0)
     ) -> "RotatedSurfaceCode":
         hx, hz, var_coordinate, check_coordinate = cls._build_css_pcm(distance)
+
+        var_coordinate = {
+            i: (coord[0], coord[1],) + system_coordinate
+            for i, coord in var_coordinate.items()
+        }
+        check_coordinate = {
+            i: (coord[0], coord[1],) + system_coordinate
+            for i, coord in check_coordinate.items()
+        }
+
         logical_qubits = cls._build_default_logicals(distance, var_coordinate)
+
         code = cls.from_css_pcm(
             code_name=code_name,
             hx=hx,

@@ -9,7 +9,8 @@ from ..data_structure import TannerNode, LogicalOperator
 
 
 class MeasurementOutcomes(BaseModel):
-    """Class to represent the measurement outcomes within a compiler, map to the corresponding measured nodes."""
+    """Class to represent a list measurement produced by a compiler
+    The list of measured node is ordered as the chronological order of measurement."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -26,7 +27,6 @@ class MeasurementOutcomes(BaseModel):
         description="List of nodes that are measured in this compiler, ordered as they appear in the measurement sequence. A node can appear multiple times if it is measured multiple times.",
     )
 
-
 class EventType(Enum):
     """Enum to represent the type of event in a qLDPC experiment."""
 
@@ -34,15 +34,13 @@ class EventType(Enum):
     OBSERVABLE = "observable"
     FRAME_CORRECTION = "frame_correction"
 
-
 class OutcomeSet(BaseModel):
-    """Class to refer a set of measurement outcome to be a specific event of interest in a qLDPC experiment."""
+    """Class to refer to be a specific value of interest in a qLDPC experiment."""
 
     model_config = ConfigDict(frozen=True)
     id: UUID = Field(default_factory=uuid4, init=False)
     tag: str
     type: EventType
-    size: int
     measured_nodes: Set[TannerNode] = Field(default_factory=set)
     target: Set[LogicalOperator] | LogicalOperator | None = Field(
         default=None,
@@ -52,6 +50,7 @@ class OutcomeSet(BaseModel):
     def __hash__(self) -> int:
         # Keep hashing stable and independent of mutable container fields.
         return hash(self.id)
+
 
 
 class MeasurementRecord(BaseModel):
@@ -64,7 +63,7 @@ class MeasurementRecord(BaseModel):
 
     events: Dict[OutcomeSet, int] = Field(
         default_factory=dict,
-        description="Dictionary mapping each event to the index of the last measurement that exists (including its own measurements) at the time the event is added to the record.",
+        description="Dictionary mapping each event to the index of the last measurement that exists at the time the event is added to the record.",
     )
     num_measurement_recorded: int = 0
     measurements: Dict[TannerNode, List[int]] = Field(
@@ -120,13 +119,3 @@ class MeasurementRecord(BaseModel):
                 )
             idxs.add(valid_indices[-1])
         return idxs
-
-    @cached_property
-    def event_to_measurement_idx(self) -> Dict[OutcomeSet, Set[int]]:
-        """Return a dictionary mapping each event to measurement indices for its measured nodes.
-
-        For size-0 events (e.g. derived observables), each node is mapped to the most recent
-        measurement index that happened before the event end index.
-        """
-
-        return {event: self.get_event_idx(event) for event in self.events}
